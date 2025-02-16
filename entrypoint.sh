@@ -83,6 +83,12 @@ function main_solid() {
         INFO "开始下载同步！"
         INFO "python3 solid.py $*"
         python3 solid.py $@
+        if [ "${CLEAN_STRM}" == "true" ]; then
+            INFO "开始清理无效资源！"
+            INFO "python3 cleaner.py $*"
+            python3 cleaner.py $@
+            INFO "清理无效资源完成！"
+        fi
         INFO "运行完成！"
         rm -f /media/solid.lock
     fi
