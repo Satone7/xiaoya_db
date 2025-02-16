@@ -19,7 +19,7 @@ import aiohttp
 from aiohttp import ClientSession, TCPConnector
 import aiosqlite
 import aiofiles.os as aio_os
-
+import requests
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
@@ -63,21 +63,21 @@ s_paths = [
 
 s_pool = [
     "https://emby.xiaoya.pro/",
-    "https://icyou.eu.org/",
-    "https://emby.8.net.co/",
-    "https://emby.raydoom.tk/",
-    "https://emby.kaiserver.uk/",
-    "https://embyxiaoya.laogl.top/",
-    "https://emby-data.poxi1221.eu.org/",
-    "https://emby-data.ermaokj.cn/",
-    "https://emby-data.bdbd.fun/",
-    "https://emby-data.wwwh.eu.org/",
-    "https://emby-data.f1rst.top/",
-    "https://emby-data.ymschh.top/",
-    "https://emby-data.wx1.us.kg/",
-    "https://emby-data.r2s.site/",
-    "https://emby-data.neversay.eu.org/",
-    "https://emby-data.800686.xyz/",
+    # "https://icyou.eu.org/",
+    # "https://emby.8.net.co/",
+    # "https://emby.raydoom.tk/",
+    # "https://emby.kaiserver.uk/",
+    # "https://embyxiaoya.laogl.top/",
+    # "https://emby-data.poxi1221.eu.org/",
+    # "https://emby-data.ermaokj.cn/",
+    # "https://emby-data.bdbd.fun/",
+    # "https://emby-data.wwwh.eu.org/",
+    # "https://emby-data.f1rst.top/",
+    # "https://emby-data.ymschh.top/",
+    # "https://emby-data.wx1.us.kg/",
+    # "https://emby-data.r2s.site/",
+    # "https://emby-data.neversay.eu.org/",
+    # "https://emby-data.800686.xyz/",
 ]
 
 s_folder = [".sync"]
@@ -91,6 +91,22 @@ opener = urllib.request.build_opener()
 opener.addheaders = [("User-Agent", CUSTOM_USER_AGENT)]
 urllib.request.install_opener(opener)
 
+def check_url_exists(url):
+    """Check if the URL resource exists"""
+    try:
+        # Use HEAD request instead of GET to avoid downloading the file
+        response = requests.head(url, timeout=10)
+
+        if response.status_code != 500:
+            # Check if response is JSON (usually indicates an error)
+            content_type = response.headers.get('content-type', '')
+            if 'application/json' in content_type:
+                return False
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Error checking URL: {url}, error: {str(e)}")
+        return False
 
 def pick_a_pool_member(url_list):
     random.shuffle(url_list)
@@ -241,12 +257,23 @@ async def parse(url, session, max_retries=3, **kwargs) -> set:
 async def need_download(file, **kwargs):
     url, filename, timestamp, filesize = file
     file_path = os.path.join(kwargs["media"], filename.lstrip("/"))
+
+    # 检查是否是同名文件
+    base_path = os.path.splitext(file_path)[0]
+    if os.path.exists(base_path + '.strm'):
+        # 如果存在同名的.strm文件且内容无效，则跳过所有同名文件
+        with open(base_path + '.strm', 'r') as f:
+            strm_url = f.read().strip()
+            if not check_url_exists(strm_url):
+                return False
+
     if not os.path.exists(file_path):
         logger.debug("%s doesn't exists", file_path)
         return True
     elif file_path.endswith(".nfo"):
         if not kwargs["nfo"]:
             return False
+
     current_filesize = os.path.getsize(file_path)
     current_timestamp = os.path.getmtime(file_path)
     logger.debug("%s has timestamp: %s and size: %s", filename, timestamp, filesize)
@@ -291,13 +318,52 @@ async def download(file, session, **kwargs):
 
 async def download_files(files, session, **kwargs):
     download_tasks = set()
-    for file in files:
+
+    # 首先处理所有的.strm文件
+    strm_files = [f for f in files if f[1].endswith('.strm')]
+    other_files = [f for f in files if not f[1].endswith('.strm')]
+
+    # 先下载并验证.strm文件
+    invalid_strm_bases = set()
+    for file in strm_files:
         if await need_download(file, **kwargs) is True:
+            url, filename, timestamp, filesize = file
+            file_path = os.path.join(kwargs["media"], filename.lstrip("/"))
+
+            # 下载并验证.strm文件
+            try:
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        content = await response.text()
+                        strm_url = content.strip()
+
+                        if check_url_exists(strm_url):
+                            # 如果验证通过，下载文件
+                            task = asyncio.create_task(download(file, session, **kwargs))
+                            task.add_done_callback(download_tasks.discard)
+                            download_tasks.add(task)
+                        else:
+                            # 如果验证失败，记录基本文件名
+                            base_name = os.path.splitext(filename)[0]
+                            invalid_strm_bases.add(base_name)
+                            logger.warning(f"Invalid STRM content in {filename}, skipping file and its related files")
+            except Exception as e:
+                logger.exception(f"Error processing STRM file {filename}: {e}")
+
+    # 等待所有.strm文件处理完成
+    await asyncio.gather(*download_tasks)
+    download_tasks.clear()
+
+    # 处理其他文件，跳过无效.strm相关的文件
+    for file in other_files:
+        base_name = os.path.splitext(file[1])[0]
+        if base_name not in invalid_strm_bases and await need_download(file, **kwargs) is True:
             task = asyncio.create_task(download(file, session, **kwargs))
             task.add_done_callback(download_tasks.discard)
             download_tasks.add(task)
             if len(download_tasks) > 100:
                 await asyncio.gather(*download_tasks)
+
     await asyncio.gather(*download_tasks)
 
 
