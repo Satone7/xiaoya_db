@@ -7,7 +7,7 @@ import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import logging
-from queue import Queue
+from queue import Queue, Empty as QueueEmpty
 from threading import Thread, Event
 import threading
 import time
@@ -28,7 +28,7 @@ def check_url_exists(url):
     try:
         # Use HEAD request instead of GET to avoid downloading the file
         response = requests.head(url, timeout=10)
-        
+
         if response.status_code != 500:
             # Check if response is JSON (usually indicates an error)
             content_type = response.headers.get('content-type', '')
@@ -48,14 +48,14 @@ def process_strm_file(strm_path):
         # Read URL from .strm file
         with open(strm_path, 'r', encoding='utf-8') as f:
             url = f.read().strip()
-        
+
         # If resource doesn't exist
         if not check_url_exists(url):
             # Get filename without extension
             base_name = os.path.splitext(strm_path)[0]
             # Get all related files
             related_files = glob.glob(f"{base_name}.*")
-            
+
             # Delete all related files
             for file_path in related_files:
                 try:
@@ -89,7 +89,7 @@ def process_files_from_queue(file_queue, done_event, executor, total_counter):
     processed_count = 0
     cleaned_count = 0
     progress_lock = threading.Lock()
-    
+
     def print_progress():
         with progress_lock:
             current_total = total_counter.value
@@ -100,16 +100,16 @@ def process_files_from_queue(file_queue, done_event, executor, total_counter):
             # 将进度条输出到标准错误
             sys.stderr.write(f"\rProgress: |{bar}| {progress:.1f}% ({processed_count}/{current_total}) Cleaned: {cleaned_count}")
             sys.stderr.flush()
-    
+
     def progress_updater():
         while not done_event.is_set() or not file_queue.empty():
             print_progress()
             time.sleep(0.5)
         print_progress()
-    
+
     progress_thread = threading.Thread(target=progress_updater, daemon=True)
     progress_thread.start()
-    
+
     def process_result(future):
         nonlocal processed_count, cleaned_count
         try:
@@ -120,7 +120,7 @@ def process_files_from_queue(file_queue, done_event, executor, total_counter):
                     cleaned_count += 1
         except Exception as e:
             logger.error(f"Error processing file: {str(e)}")
-    
+
     # 提交任务并添加回调
     while True:
         try:
@@ -129,9 +129,9 @@ def process_files_from_queue(file_queue, done_event, executor, total_counter):
             file_path = file_queue.get(timeout=1)
             future = executor.submit(process_strm_file, file_path)
             future.add_done_callback(process_result)
-        except Queue.Empty:
+        except QueueEmpty:
             continue
-    
+
     progress_thread.join()
     print()
     return cleaned_count, processed_count
@@ -217,24 +217,24 @@ def main():
     target_dir = args.media
     file_queue = Queue()
     done_event = Event()
-    
+
     # 使用共享变量跟踪总文件数
     total_counter = multiprocessing.Value('i', 0)
-    
+
     collector_thread = Thread(
         target=collect_strm_files,
         args=(target_dir, file_queue, done_event, total_counter)
     )
     collector_thread.start()
-    
+
     with ThreadPoolExecutor(max_workers=4) as executor:
         cleaned_count, processed_count = process_files_from_queue(
             file_queue, done_event, executor, total_counter
         )
-    
+
     collector_thread.join()
     logger.info(f"Final total files: {total_counter.value}")
     logger.info(f"Cleanup completed! Processed {processed_count} files, cleaned {cleaned_count} invalid resources")
 
 if __name__ == "__main__":
-    main() 
+    main()
