@@ -426,7 +426,7 @@ async def bulk_crawl_and_write(url, session, db_session, depth=0, **kwargs) -> N
     await asyncio.gather(*tasks)
 
 
-async def compare_databases(localdb, tempdb, total_amount):
+async def compare_databases(localdb, tempdb, total_amount, purge_anyway=False):
     async with aiosqlite.connect(localdb) as conn1, aiosqlite.connect(tempdb) as conn2:
         cursor1 = await conn1.cursor()
         cursor2 = await conn2.cursor()
@@ -438,10 +438,10 @@ async def compare_databases(localdb, tempdb, total_amount):
         temp_filenames = set(filename[0] for filename in await cursor2.fetchall())
         gap = abs(len(temp_filenames) - total_amount)
 
-        if gap < 10 and total_amount > 0:
+        if (gap < 10 or purge_anyway) and total_amount > 0:
             if not gap == 0:
                 logger.warning(
-                    "Total amount do not match: %d -> %d. But the gap %d is less than 10, purging anyway...",
+                    "Total amount do not match: %d -> %d. But the gap %d is less than 10 or purge_anyway is True, purging anyway...",
                     total_amount,
                     len(temp_filenames),
                     abs(len(temp_filenames) - total_amount),
@@ -457,8 +457,8 @@ async def compare_databases(localdb, tempdb, total_amount):
             return []
 
 
-async def purge_removed_files(localdb, tempdb, media, total_amount):
-    for file in await compare_databases(localdb, tempdb, total_amount):
+async def purge_removed_files(localdb, tempdb, media, total_amount, purge_anyway=False):
+    for file in await compare_databases(localdb, tempdb, total_amount, purge_anyway):
         logger.info("Purged %s", file)
         try:
             os.remove(media + file)
@@ -574,6 +574,13 @@ async def main():
         type=bool,
         default=True,
         help="Purge removed files [Default: %(default)s]",
+    )
+    parser.add_argument(
+        "--purge-anyway",
+        action=argparse.BooleanOptionalAction,
+        type=bool,
+        default=False,
+        help="Purge anyway [Default: %(default)s]",
     )
     parser.add_argument(
         "--all",
@@ -718,8 +725,8 @@ async def main():
     if db_session:
         await db_session.commit()
         await db_session.close()
-    if args.purge:
-        await purge_removed_files(localdb, tempdb, media, total_amount)
+    if args.purge or args.purge_anyway:
+        await purge_removed_files(localdb, tempdb, media, total_amount, args.purge_anyway)
         remove_empty_folders(paths, media)
         os.remove(localdb)
         if not args.all:
