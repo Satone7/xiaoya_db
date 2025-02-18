@@ -12,6 +12,7 @@ from threading import Thread, Event
 import threading
 import time
 import multiprocessing
+from webdav3.client import Client
 
 # Configure logging
 logging.basicConfig(
@@ -23,19 +24,37 @@ logging.basicConfig(
 logger = logging.getLogger("clean_strm")
 # logging.getLogger("chardet.charsetprober").disabled = True
 
-def check_url_exists(url):
-    """Check if the URL resource exists"""
-    try:
-        # Use HEAD request instead of GET to avoid downloading the file
-        response = requests.head(url, timeout=10)
+def create_webdav_client(url, username="guest", password="guest_Api789"):
+    """创建 WebDAV 客户端"""
+    webdav_hostname = url.split('/d/')[0] + '/dav'
+    options = {
+        'webdav_hostname': webdav_hostname,
+        'webdav_login': username,
+        'webdav_password': password
+    }
+    return Client(options)
 
-        if response.status_code != 500:
-            # Check if response is JSON (usually indicates an error)
-            content_type = response.headers.get('content-type', '')
-            if 'application/json' in content_type:
-                return False
-            return True
-        return False
+def check_url_exists(url):
+    """使用 WebDAV 检查资源是否存在"""
+    try:
+        # 将 /d/ 路径转换为 /dav/ 路径
+        if '/d/' not in url:
+            return False
+
+        webdav_path = url.split('/d/')[1]
+        client = create_webdav_client(url)
+
+        # 尝试检查文件是否存在
+        retries = 3
+        for attempt in range(retries):
+            try:
+                return client.check(webdav_path)
+            except Exception as e:
+                if attempt == retries - 1:
+                    logger.error(f"Error checking WebDAV path after {retries} attempts: {webdav_path}, error: {str(e)}")
+                    return False
+                time.sleep(2)  # 重试前等待
+
     except Exception as e:
         logger.error(f"Error checking URL: {url}, error: {str(e)}")
         return False
@@ -208,6 +227,20 @@ def main():
         metavar="<file>",
         type=str,
         help="Bitmap of paths or a file containing paths to be selected (See paths.example)",
+    )
+    parser.add_argument(
+        "--username",
+        metavar="[username]",
+        type=str,
+        default="guest",
+        help="WebDAV username [Default: %(default)s]",
+    )
+    parser.add_argument(
+        "--password",
+        metavar="[password]",
+        type=str,
+        default="guest_Api789",
+        help="WebDAV password [Default: %(default)s]",
     )
 
     args = parser.parse_args()
